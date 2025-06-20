@@ -33,6 +33,7 @@ public struct UPnPDeviceDescription: Codable {
     let deviceId: String
     let deviceType: String
     let url: URL
+    let server: String
     let lastSeen: Date
 }
 
@@ -41,10 +42,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
     public let deviceId: String
     public let deviceType: String
     public let url: URL
+    public let server: String
+    public var rootXML: String?
     public internal(set) var lastSeen: Date
     
     internal var upnpDeviceDescription: UPnPDeviceDescription {
-        UPnPDeviceDescription(uuid: uuid, deviceId: deviceId, deviceType: deviceType, url: url, lastSeen: lastSeen)
+        UPnPDeviceDescription(uuid: uuid, deviceId: deviceId, deviceType: deviceType, url: url, server: server, lastSeen: lastSeen)
     }
     
     public var data: Data? {
@@ -63,11 +66,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         }
     }
     
-    internal init(uuid: String, deviceId: String, deviceType: String, url: URL, lastSeen: Date) {
+    internal init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String, lastSeen: Date) {
         self.uuid = uuid
         self.deviceId = deviceId
         self.deviceType = deviceType
         self.url = url
+        self.server = server
         self.lastSeen = lastSeen
         self.servicesLoaded = false
     }
@@ -98,6 +102,7 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         self.deviceType = upnpDeviceDescription.deviceType
         self.url = upnpDeviceDescription.url
         self.lastSeen = upnpDeviceDescription.lastSeen
+        self.server = upnpDeviceDescription.server
         self.servicesLoaded = false
     }
 
@@ -124,7 +129,7 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
     
     func loadServices() async -> Bool {
         guard await loadRoot() == true else {
-            Logger.swiftUPnP.error("Failed to load root on \(self.url)")
+            Logger.swiftUPnP.error("Failed to load root on \(self.url, privacy: .public)")
             return false
         }
             
@@ -150,11 +155,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
             return false
         }
         
+        rootXML = String(data: data, encoding: .utf8)
+        
         do {
             let decoder = XMLDecoder()
             decoder.shouldProcessNamespaces = false
             deviceDefinition = try decoder.decode(UPnPDeviceDefinition.self, from: data)
-            Logger.swiftUPnP.debug("Device parsed \(self.deviceDefinition!.device.friendlyName) - \(self.deviceDefinition!.device.deviceType  )")
             return true
         }
         catch DecodingError.dataCorrupted(let context) {
@@ -166,11 +172,11 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         } catch DecodingError.valueNotFound(let type, let context) {
             Logger.swiftUPnP.error("no value was found for \(type), \(context.debugDescription)")
         } catch {
-            Logger.swiftUPnP.error("Unknown error \(error.localizedDescription)")
+            Logger.swiftUPnP.error("Unknown error \(error.localizedDescription, privacy: .public)")
         }
         
         return false
-    }    
+    }
 }
 
 @MainActor

@@ -46,12 +46,16 @@ class SSDPDiscovery: NSObject {
     var types = [String]()
     
     func searchRequestData(forType type: String) -> Data? {
-        ["M-SEARCH * HTTP/1.1",
-         "HOST: \(multicastGroupAddress):\(multicastUDPPort)",
-         "MAN: \"ssdp:discover\"",
-         "ST: \(type)",
-         "MX: 3",
-         "USER-AGENT: \(UserAgentGenerator().UAString)\r\n\r\n"].joined(separator: "\r\n").data(using: .utf8)
+        [
+            "M-SEARCH * HTTP/1.1",
+            "MAN: \"ssdp:discover\"",
+            "HOST: \(multicastGroupAddress):\(multicastUDPPort)",
+            "ST: \(type)",
+            "MX: 5",
+            "\r\n"
+        ]
+        .joined(separator: "\r\n")
+        .data(using: .utf8)
     }
     
     func handleSSDPMessage(_ messageType: SSDPMessageType, headers: [String: String]) {
@@ -60,6 +64,7 @@ class SSDPDiscovery: NSObject {
             if usnComponents.count == 2,
                let locationString = headers["location"],
                let locationURL = URL(string: locationString),
+               let server = headers["server"],
                /// NT = Notification Type - SSDP discovered from device advertisements
                /// ST = Search Target - SSDP discovered as a result of using M-SEARCH requests
                 let ssdpType = (headers["st"] != nil ? headers["st"] : headers["nt"]) {
@@ -67,19 +72,19 @@ class SSDPDiscovery: NSObject {
                 let uuid = usnComponents[0]
                 let deviceId = usnComponents[1]
 
-                if types.contains(ssdpType) {
-                    if messageType == .unavailableNotification {
-                        Task {
-                            await UPnPRegistry.shared.remove(UPnPDevice(uuid: uuid, deviceId: deviceId, deviceType: ssdpType, url: locationURL, lastSeen: Date()))
-                        }
+                if messageType == .unavailableNotification {
+                    Task {
+                        await UPnPRegistry.shared.remove(UPnPDevice(uuid: uuid, deviceId: deviceId, deviceType: ssdpType, url: locationURL, server: server, lastSeen: Date()))
                     }
-                    else {
-                        Task {
-                            await UPnPRegistry.shared.add(UPnPDevice(uuid: uuid, deviceId: deviceId, deviceType: ssdpType, url: locationURL, lastSeen: Date()))
-                        }
+                }
+                else {
+                    Task {
+                        await UPnPRegistry.shared.add(UPnPDevice(uuid: uuid, deviceId: deviceId, deviceType: ssdpType, url: locationURL, server: server, lastSeen: Date()))
                     }
                 }
             }
+        } else {
+            Logger.swiftUPnP.info("Can't process SSDP message: No usn header")
         }
     }
     
@@ -115,6 +120,8 @@ class SSDPDiscovery: NSObject {
                     return
                 }
             }
+        } else {
+            Logger.swiftUPnP.error("Can't process data: message is nil")
         }
     }
 }
