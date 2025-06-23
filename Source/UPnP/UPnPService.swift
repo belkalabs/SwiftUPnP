@@ -151,7 +151,7 @@ public class UPnPService: Equatable, Identifiable, Hashable {
         } catch DecodingError.valueNotFound(let type, let context) {
             Logger.swiftUPnP.error("no value was found for \(type), \(context.debugDescription)")
         } catch {
-            Logger.swiftUPnP.error("Unknown error \(error.localizedDescription)")
+            Logger.swiftUPnP.error("Unknown error \(error.localizedDescription, privacy: .public)")
         }
 
     }
