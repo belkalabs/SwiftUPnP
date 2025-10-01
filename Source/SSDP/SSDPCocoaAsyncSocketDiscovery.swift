@@ -45,7 +45,7 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
         
         let multicastSocket = GCDAsyncUdpSocket(delegate: self, delegateQueue: queue)
         multicastSocket.setIPv4Enabled(true)
-        multicastSocket.setIPv6Enabled(false)
+        multicastSocket.setIPv6Enabled(true)
 
         
         try multicastSocket.enableReusePort(true)

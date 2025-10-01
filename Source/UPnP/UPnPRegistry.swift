@@ -34,7 +34,7 @@ public class UPnPRegistry {
     
     // Use CocoaAsyncSocket discovery for SSDP, as the standard network framework doesn't support when
     // multiple apps connect to the same multicast port (see https://developer.apple.com/forums/thread/716339)
-    //private let discoveryEngine = SSDPNetworkDiscovery()
+//    private let discoveryEngine = SSDPNetworkDiscovery()
     private let discoveryEngine = SSDPCocoaAsyncSocketDiscovery()
 
     @MainActor
