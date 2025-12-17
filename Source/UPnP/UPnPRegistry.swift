@@ -70,8 +70,8 @@ public class UPnPRegistry {
         httpServerPort = IPHelper.freePortFromRange(range: httpServerPortRange)
         httpServer = HttpServer()
         httpServer[eventCallBackPath] = { [weak self] request in
-            guard let self else { return HttpResponse.internalServerError(.text("Self released")) }
-            guard request.method.lowercased() == "notify" else { return HttpResponse.internalServerError(.text("Only handling NOTIFY")) }
+            guard let self else { return HttpResponse.internalServerError }
+            guard request.method.lowercased() == "notify" else { return HttpResponse.internalServerError }
             
             let headerFields = Dictionary(uniqueKeysWithValues: request.headers.map { key, value in (key.uppercased(), value) })
             if let sid = headerFields["SID"] {
