@@ -28,13 +28,22 @@ import Foundation
 import XMLCoder
 import os.log
 
-public struct UPnPDeviceDescription: Codable {
-    let uuid: String
-    let deviceId: String
-    let deviceType: String
-    let url: URL
-    let server: String
-    let lastSeen: Date
+public struct UPnPDeviceDescription: Codable, Sendable {
+    public let uuid: String
+    public let deviceId: String
+    public let deviceType: String
+    public let url: URL
+    public let server: String
+    public let lastSeen: Date
+
+    public init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String, lastSeen: Date) {
+        self.uuid = uuid
+        self.deviceId = deviceId
+        self.deviceType = deviceType
+        self.url = url
+        self.server = server
+        self.lastSeen = lastSeen
+    }
 }
 
 public class UPnPDevice: Equatable, Identifiable, Hashable {
@@ -82,22 +91,22 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
     }
     
     @MainActor
-    /// Create a fully loaded UPnPDevice, but without adding it to a device registry. There is no subscription for state changes on the services on this device.
-    /// - Parameter data: a data representation of the description of the service
-    /// - Returns: a fully loaded device, or nil if it can't be found/loaded
-    public static func reanimateDeep(from data: Data) async -> UPnPDevice? {
+    /// Create a fully loaded UPnPDevice from saved description data, without adding it to a device registry.
+    /// Passing a registry preserves event subscription callbacks for reanimated devices.
+    public static func reanimateDeep(from data: Data, registry: UPnPRegistry? = nil) async -> UPnPDevice? {
         guard let upnpDeviceDescription = try? JSONDecoder().decode(UPnPDeviceDescription.self, from: data) else { return nil }
-        return await reanimateDeep(upnpDeviceDescription: upnpDeviceDescription)
+        return await reanimateDeep(upnpDeviceDescription: upnpDeviceDescription, registry: registry)
     }
 
     @MainActor
-    /// Create a fully loaded UPnPDevice, but without adding it to a device registry. There is no subscription for state changes on the services on this device.
+    /// Create a fully loaded UPnPDevice, but without adding it to a device registry.
+    /// Passing a registry preserves event subscription callbacks for reanimated devices.
     /// - Parameter upnpDeviceDescription: a description of the service
     /// - Returns: a fully loaded device, or nil if it can't be found/loaded
-    public static func reanimateDeep(upnpDeviceDescription: UPnPDeviceDescription) async -> UPnPDevice? {
+    public static func reanimateDeep(upnpDeviceDescription: UPnPDeviceDescription, registry: UPnPRegistry? = nil) async -> UPnPDevice? {
         let device = UPnPDevice(upnpDeviceDescription: upnpDeviceDescription)
         
-        if await device.loadServices() {
+        if await device.loadServices(registry: registry) {
             device.servicesLoaded = true
             return device
         }
@@ -136,7 +145,7 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         services.append(service)
     }
     
-    func loadServices() async -> Bool {
+    func loadServices(registry: UPnPRegistry? = nil) async -> Bool {
         guard await loadRoot() == true else {
             Logger.swiftUPnP.error("Failed to load root on \(self.url, privacy: .public)")
             return false
@@ -144,7 +153,10 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
             
         if let deviceServices = deviceDefinition?.device.serviceList?.service {
             for deviceService in deviceServices {
-                guard let service = UPnPRegistry.typedService(device: self, serviceUrn: deviceService.serviceType) else { continue }
+                guard let service = UPnPRegistry.typedService(device: self,
+                                                              serviceUrn: deviceService.serviceType,
+                                                              eventPublisher: registry?.eventPublisher,
+                                                              eventCallbackUrl: registry?.eventCallbackUrl) else { continue }
                 
                 await service.loadScdp()
                 await add(service)

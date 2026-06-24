@@ -90,6 +90,7 @@ final class SwiftUPnPTests: XCTestCase {
                                                       deviceId: "urn:linn-co-uk:device:Source:1",
                                                       deviceType: "urn:linn-co-uk:device:Source:1",
                                                       url: URL(string: "\(openHomeBase)/desc.xml")!,
+                                                      server: "Linux/5.4 UPnP/1.0 OpenHome",
                                                       lastSeen: Date())
         
         let noDeviceAddedExpectation = XCTestExpectation(description: "No device is being added")
@@ -129,6 +130,7 @@ final class SwiftUPnPTests: XCTestCase {
                                                       deviceId: "urn:schemas-upnp-org:device:MediaServer:1",
                                                       deviceType: "urn:schemas-upnp-org:device:MediaServer:1",
                                                       url: URL(string: "\(mediaServerBase)/description.xml")!,
+                                                      server: "Linux/5.4 UPnP/1.0 MediaServer",
                                                       lastSeen: Date())
 
         let mediaServer = await UPnPDevice.reanimateDeep(upnpDeviceDescription: mediaServerDescription)
@@ -138,5 +140,25 @@ final class SwiftUPnPTests: XCTestCase {
         XCTAssertNotNil(mediaServer!.connectionManager1Service)
 
         await fulfillment(of: [noDeviceAddedExpectation], timeout: 0.3)
+    }
+
+    @MainActor
+    func testReanimateFromDataPreservesServerRootXMLAndRegistryEventCallback() async throws {
+        let registry = UPnPRegistry(httpServerPortRange: 52000..<52010)
+        registry.eventCallbackUrl = URL(string: "http://127.0.0.1:52000/Event/test")
+        let playerDescription = UPnPDeviceDescription(uuid: "uuid:f4fe91fd-dfe2-07ed-ffff-ffffd91a1d9a",
+                                                      deviceId: "urn:linn-co-uk:device:Source:1",
+                                                      deviceType: "urn:linn-co-uk:device:Source:1",
+                                                      url: URL(string: "\(openHomeBase)/desc.xml")!,
+                                                      server: "Linux/5.4 UPnP/1.0 OpenHome",
+                                                      lastSeen: Date())
+        let data = try JSONEncoder().encode(playerDescription)
+
+        let player = await UPnPDevice.reanimateDeep(from: data, registry: registry)
+
+        XCTAssertNotNil(player, "player not loaded from saved data")
+        XCTAssertEqual(player?.server, "Linux/5.4 UPnP/1.0 OpenHome")
+        XCTAssertNotNil(player?.rootXML)
+        XCTAssertEqual(player?.openHomeInfo1Service?.eventCallbackUrl, registry.eventCallbackUrl)
     }
 }
