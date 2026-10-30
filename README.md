@@ -4,6 +4,9 @@
 [![bitrise CI](https://img.shields.io/bitrise/4821d650-38ae-4d26-b81d-bfca611d691b?token=86TPT9nYntoaEFj7c6blxw)](https://bitrise.io)
 
 # SwiftUPnP
+
+Belkalabs TV discovery changes and migration details: [FORK_NOTES.md](FORK_NOTES.md).
+
 SwiftUPnP is a Swift-based library that provides a comprehensive set of APIs for developers to implement the UPnP (Universal Plug and Play) and OpenHome protocols. With SwiftUPnP, developers can integrate UPnP and OpenHome support into their iOS, macOS, and tvOS apps, allowing users to discover and control audio devices on their network.
 
 SwiftUPnP implements the full set of UPnP and OpenHome services, including event processing. This means that developers can create real-time apps that can handle UPnP and OpenHome events, such as changes in the status of a device or the addition of a new device to the network. With SwiftUPnP, developers can implement event processing by subscribing to device services and receiving notifications when events occur.

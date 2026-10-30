@@ -316,8 +316,8 @@ public class UPnPService: Equatable, Identifiable, Hashable, @unchecked Sendable
 
     /// The text of the first element with the given name, namespace prefix or not.
     private static func value(ofElement name: String, in xml: String) -> String? {
-        guard let range = xml.range(of: "<([a-zA-Z0-9]+:)?\\(name)[^>]*>", options: [.regularExpression]),
-              let end = xml.range(of: "</([a-zA-Z0-9]+:)?\\(name)>", options: [.regularExpression], range: range.upperBound..<xml.endIndex) else {
+        guard let range = xml.range(of: "<([a-zA-Z0-9]+:)?\(name)[^>]*>", options: [.regularExpression]),
+              let end = xml.range(of: "</([a-zA-Z0-9]+:)?\(name)>", options: [.regularExpression], range: range.upperBound..<xml.endIndex) else {
             return nil
         }
 

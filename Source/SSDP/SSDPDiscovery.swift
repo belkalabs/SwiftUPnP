@@ -44,14 +44,15 @@ class SSDPDiscovery: NSObject {
     let multicastGroupAddress = "239.255.255.250"
     let multicastUDPPort: UInt16 = 1900
     var types = [String]()
+    var requiredDefaultFiltration = false
     
     func searchRequestData(forType type: String) -> Data? {
         ["M-SEARCH * HTTP/1.1",
-         "HOST: \(multicastGroupAddress):\(multicastUDPPort)",
          "MAN: \"ssdp:discover\"",
+         "HOST: \(multicastGroupAddress):\(multicastUDPPort)",
          "ST: \(type)",
-         "MX: 3",
-         "USER-AGENT: \(UserAgentGenerator().UAString)\r\n\r\n"].joined(separator: "\r\n").data(using: .utf8)
+         "MX: 5",
+         "\r\n"].joined(separator: "\r\n").data(using: .utf8)
     }
     
     func handleSSDPMessage(_ messageType: SSDPMessageType, headers: [String: String]) {
@@ -68,7 +69,7 @@ class SSDPDiscovery: NSObject {
         }
     }
 
-    /// The device a message is about, when it is one of the types searched for.
+    /// Strict response filtering is optional because TVs also advertise vendor-specific services.
     func device(from headers: [String: String]) -> UPnPDevice? {
         guard let usnRawValue = headers["usn"] else { return nil }
         let usnComponents = usnRawValue.components(separatedBy: "::")
@@ -78,9 +79,9 @@ class SSDPDiscovery: NSObject {
               /// NT = Notification Type - SSDP discovered from device advertisements
               /// ST = Search Target - SSDP discovered as a result of using M-SEARCH requests
               let ssdpType = (headers["st"] != nil ? headers["st"] : headers["nt"]),
-              types.contains(ssdpType) else { return nil }
+              (!requiredDefaultFiltration || types.contains(ssdpType)) else { return nil }
 
-        return UPnPDevice(uuid: usnComponents[0], deviceId: usnComponents[1], deviceType: ssdpType, url: locationURL, lastSeen: Date())
+        return UPnPDevice(uuid: usnComponents[0], deviceId: usnComponents[1], deviceType: ssdpType, url: locationURL, server: headers["server"] ?? "", lastSeen: Date())
     }
     
     func processData(_ data: Data) {

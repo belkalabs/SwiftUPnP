@@ -139,4 +139,38 @@ final class SwiftUPnPTests: XCTestCase {
 
         await fulfillment(of: [noDeviceAddedExpectation], timeout: 0.3)
     }
+
+    @MainActor
+    func testReanimateFromDataPreservesServerAndRootXML() async throws {
+        let description = UPnPDeviceDescription(uuid: "uuid:tv",
+                                                deviceId: "urn:linn-co-uk:device:Source:1",
+                                                deviceType: "urn:linn-co-uk:device:Source:1",
+                                                url: URL(string: "\(openHomeBase)/desc.xml")!,
+                                                server: "Linux/5.4 UPnP/1.0 TV",
+                                                lastSeen: Date())
+        let data = try JSONEncoder().encode(description)
+        let restored = await UPnPDevice.reanimateDeep(from: data)
+        let device = try XCTUnwrap(restored)
+
+        XCTAssertEqual(device.server, description.server)
+        XCTAssertEqual(device.rootXML, String(data: MockedData.openHomeRendererXML.data, encoding: .utf8))
+        let saved = try XCTUnwrap(device.data)
+        XCTAssertEqual(try JSONDecoder().decode(UPnPDeviceDescription.self, from: saved).server, description.server)
+    }
+
+    func testSavedUpstreamDescriptionWithoutServerCanStillBeRestored() throws {
+        let description = UPnPDeviceDescription(uuid: "uuid:legacy",
+                                                deviceId: "urn:test:device:TV:1",
+                                                deviceType: "urn:test:device:TV:1",
+                                                url: URL(string: "http://192.168.1.20/device.xml")!,
+                                                lastSeen: Date())
+        let encoded = try JSONEncoder().encode(description)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json.removeValue(forKey: "server")
+        let data = try JSONSerialization.data(withJSONObject: json)
+        let device = try XCTUnwrap(UPnPDevice.reanimate(from: data))
+
+        XCTAssertEqual(device.uuid, description.uuid)
+        XCTAssertEqual(device.server, "")
+    }
 }

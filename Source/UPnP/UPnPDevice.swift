@@ -33,14 +33,30 @@ public struct UPnPDeviceDescription: Codable, Sendable {
     public let deviceId: String
     public let deviceType: String
     public let url: URL
+    public let server: String
     public let lastSeen: Date
     
-    public init(uuid: String, deviceId: String, deviceType: String, url: URL, lastSeen: Date) {
+    public init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String = "", lastSeen: Date) {
         self.uuid = uuid
         self.deviceId = deviceId
         self.deviceType = deviceType
         self.url = url
+        self.server = server
         self.lastSeen = lastSeen
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case uuid, deviceId, deviceType, url, server, lastSeen
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        uuid = try container.decode(String.self, forKey: .uuid)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        deviceType = try container.decode(String.self, forKey: .deviceType)
+        url = try container.decode(URL.self, forKey: .url)
+        server = try container.decodeIfPresent(String.self, forKey: .server) ?? ""
+        lastSeen = try container.decode(Date.self, forKey: .lastSeen)
     }
 }
 
@@ -49,10 +65,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
     public let deviceId: String
     public let deviceType: String
     public let url: URL
+    public let server: String
+    public var rootXML: String?
     public internal(set) var lastSeen: Date
     
     internal var upnpDeviceDescription: UPnPDeviceDescription {
-        UPnPDeviceDescription(uuid: uuid, deviceId: deviceId, deviceType: deviceType, url: url, lastSeen: lastSeen)
+        UPnPDeviceDescription(uuid: uuid, deviceId: deviceId, deviceType: deviceType, url: url, server: server, lastSeen: lastSeen)
     }
     
     public var data: Data? {
@@ -71,11 +89,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         }
     }
     
-    internal init(uuid: String, deviceId: String, deviceType: String, url: URL, lastSeen: Date) {
+    internal init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String = "", lastSeen: Date) {
         self.uuid = uuid
         self.deviceId = deviceId
         self.deviceType = deviceType
         self.url = url
+        self.server = server
         self.lastSeen = lastSeen
         self.servicesLoaded = false
     }
@@ -117,6 +136,7 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         self.deviceId = upnpDeviceDescription.deviceId
         self.deviceType = upnpDeviceDescription.deviceType
         self.url = upnpDeviceDescription.url
+        self.server = upnpDeviceDescription.server
         self.lastSeen = upnpDeviceDescription.lastSeen
         self.servicesLoaded = false
     }
@@ -179,6 +199,8 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
             return false
         }
         
+        rootXML = String(data: data, encoding: .utf8)
+
         do {
             let decoder = XMLDecoder()
             decoder.shouldProcessNamespaces = false
