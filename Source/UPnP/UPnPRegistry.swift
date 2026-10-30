@@ -104,8 +104,8 @@ public class UPnPRegistry {
         eventCallbackUrl = callbackUrl()
     }
 
-    public func startDiscovery(_ types: [String] = ["urn:schemas-upnp-org:device:MediaServer:1", "urn:linn-co-uk:device:Source:1", "urn:av-openhome-org:device:Source:1"]) throws {
-        let filteredTypes = types.filter { $0.contains(":device:") }
+    public func startDiscovery(_ types: [String] = ["urn:schemas-upnp-org:device:MediaServer:1", "urn:linn-co-uk:device:Source:1", "urn:av-openhome-org:device:Source:1"], requiredDefaultFiltration: Bool = false) throws {
+        let filteredTypes = requiredDefaultFiltration ? types.filter { $0.contains(":device:") } : types
         guard filteredTypes.count == types.count else {
             Logger.swiftUPnP.error("Only device types are discovered, service types will be discovered indirectly from the device description. Non-device types will be filtered.")
             return
@@ -114,8 +114,19 @@ public class UPnPRegistry {
         // The discovery engine keeps its state on the main queue, like its socket callbacks.
         Task { @MainActor in
             await startHTTPServerIfNotRunning()
-            try discoveryEngine.startDiscovery(forTypes: filteredTypes)
-            discoveryEngine.searchRequest()
+            discoveryEngine.requiredDefaultFiltration = requiredDefaultFiltration
+            do {
+                try discoveryEngine.startDiscovery(forTypes: filteredTypes)
+                discoveryEngine.searchRequest()
+            } catch {
+                Logger.swiftUPnP.error("Could not start SSDP discovery: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    public func setDiscoveryDelegate(_ delegate: DiscoveryDelegate) {
+        Task { @MainActor in
+            discoveryEngine.delegate = delegate
         }
     }
     

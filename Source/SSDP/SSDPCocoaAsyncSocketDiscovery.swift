@@ -30,8 +30,13 @@ import CocoaAsyncSocket
 import Network
 import os.log
 
+public protocol DiscoveryDelegate: AnyObject {
+    func sockedDidClose(_ error: Error?)
+}
+
 class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
     private var multicastSocket: GCDAsyncUdpSocket?
+    weak var delegate: DiscoveryDelegate?
     /// Bumped on every start and stop, so work scheduled for an earlier session (repeated searches, reopening the
     /// socket) is dropped.
     private var generation = 0
@@ -97,8 +102,9 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
         do {
             try multicastSocket.enableReusePort(true)
             try multicastSocket.enableBroadcast(true)
-            try multicastSocket.bind(toPort: multicastUDPPort)
-            try multicastSocket.joinMulticastGroup(multicastGroupAddress)
+            // Keep the remote apps' active-search socket settings when recovering the connection.
+            try multicastSocket.bind(toPort: 0)
+            try multicastSocket.joinMulticastGroup(multicastGroupAddress, onInterface: "en0")
             try multicastSocket.beginReceiving()
         }
         catch {
@@ -115,7 +121,7 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
 
         for type in types {
             if let data = self.searchRequestData(forType: type) {
-                multicastSocket.send(data, toHost: multicastGroupAddress, port: multicastUDPPort, withTimeout: 3, tag: type.hashValue)
+                multicastSocket.send(data, toHost: multicastGroupAddress, port: multicastUDPPort, withTimeout: 5, tag: type.hashValue)
             }
         }
     }
@@ -173,6 +179,7 @@ extension SSDPCocoaAsyncSocketDiscovery: GCDAsyncUdpSocketDelegate {
         guard sock === multicastSocket else { return }
         multicastSocket = nil
         reopenSocket(after: 2)
+        delegate?.sockedDidClose(error)
     }
     
     public func udpSocket(_ sock: GCDAsyncUdpSocket, didReceive data: Data, fromAddress address: Data, withFilterContext filterContext: Any?) {
