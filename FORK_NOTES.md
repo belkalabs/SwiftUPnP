@@ -38,11 +38,22 @@ and TV discovery, saved-description and SOAP regression cases.
 
 Real televisions and Wi-Fi transitions still require device testing.
 
+## Stable release
+
+Use `v1.2.0` from https://github.com/belkalabs/SwiftUPnP for the new remote
+app releases. Both historical branches are merged into `main`; their useful
+changes are represented by the upstream-based implementation above.
+
+The history merges preserve the source, tests and package manifest that
+passed the 42 tests and the RemoteControl iOS Simulator build. Historical
+versions remain available without changing the release implementation.
+
 ## Migration history
 
 - `legacy/main-before-upstream-sync` preserves the old standalone repository's
   main branch at `7d7a416eb20b3eab7dce3b61e4a8090af3b08039`.
 - `tv-connection-reliability-v2` preserves the deployed package at
   `e8ca6eabf6e246d42edc30ccee15d5ea9d74c976`.
+- Both histories are included in `main`.
 - The old repository is retained as an archive so repository-level history and
   settings are not discarded during migration to GitHub's fork network.
