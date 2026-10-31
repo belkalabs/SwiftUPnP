@@ -75,6 +75,54 @@ final class SSDPReliabilityTests: XCTestCase {
         XCTAssertEqual(requests, 2)
     }
 
+    // MARK: - DIAL WAKEUP
+
+    @MainActor
+    func testAWakeUpMACFromALaterAnswerReachesTheKnownDevice() async throws {
+        let url = URL(string: "http://192.168.1.78:8008/ssdp/device-desc.xml")!
+        let description = """
+        <?xml version="1.0"?>
+        <root xmlns="urn:schemas-upnp-org:device-1-0">
+        <device>
+        <deviceType>urn:dial-multiscreen-org:device:dial:1</deviceType>
+        <friendlyName>Living Room TV</friendlyName>
+        <manufacturer>Google</manufacturer>
+        <modelName>Google TV</modelName>
+        <UDN>uuid:wakeful</UDN>
+        </device>
+        </root>
+        """
+        var requests = 0
+        var mock = Mock(url: url, contentType: .xml, statusCode: 200, data: [.get: Data(description.utf8)])
+        mock.completion = { requests += 1 }
+        mock.register()
+
+        let registry = UPnPRegistry(httpServerPortRange: 52400..<52499)
+        var added: [UPnPDevice] = []
+        registry.deviceAdded.sink { added.append($0) }.store(in: &cancellables)
+
+        // The root device answers first, without the header; the DIAL answer of the same device carries it.
+        registry.add(UPnPDevice(uuid: "uuid:wakeful", deviceId: "upnp:rootdevice", deviceType: "upnp:rootdevice", url: url, lastSeen: Date()))
+        try await waitUntil { added.count == 1 }
+        XCTAssertNil(added.first?.wakeOnLANMACAddress)
+
+        let wakeUp = SSDPWakeUp(macAddress: "10:dd:b1:c9:00:e4", timeout: 10)
+        registry.add(UPnPDevice(uuid: "uuid:wakeful", deviceId: "urn:dial-multiscreen-org:service:dial:1",
+                                deviceType: "urn:dial-multiscreen-org:service:dial:1", url: url, lastSeen: Date(), wakeUp: wakeUp))
+        try await waitUntil { added.count == 2 }
+
+        XCTAssertEqual(added.count, 2)
+        XCTAssertTrue(added.last === added.first, "The known device is announced again, not a second copy")
+        XCTAssertEqual(added.last?.wakeOnLANMACAddress, "10:dd:b1:c9:00:e4")
+        XCTAssertEqual(requests, 1, "The description is not loaded again")
+
+        // The same header again changes nothing.
+        registry.add(UPnPDevice(uuid: "uuid:wakeful", deviceId: "urn:dial-multiscreen-org:service:dial:1",
+                                deviceType: "urn:dial-multiscreen-org:service:dial:1", url: url, lastSeen: Date(), wakeUp: wakeUp))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(added.count, 2)
+    }
+
     @MainActor
     private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)

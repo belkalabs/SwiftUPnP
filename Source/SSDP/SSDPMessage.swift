@@ -69,7 +69,6 @@ struct SSDPMessage: Equatable {
     var notificationSubtype: String? {
         headers["nts"]?.lowercased()
     }
-
     private static let padding = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}"))
 
     private static func kind(startLine: String, headers: [String: String]) -> Kind {
@@ -128,5 +127,78 @@ struct SSDPUniqueServiceName: Equatable {
         self.rawValue = value
         self.device = device
         self.uuid = device.lowercased().hasPrefix("uuid:") ? String(device.dropFirst(5)) : device
+    }
+}
+
+/// The DIAL 2.1 `WAKEUP` header of a search response, e.g. `WAKEUP: MAC=10:dd:b1:c9:00:e4;Timeout=10`: the MAC that
+/// takes a Wake-on-LAN packet while the device sleeps, and how many seconds it needs to answer after one.
+///
+/// Parsed leniently, as TVs send it: names in any case, `;` or `,` between the fields, spaces around `=`, quoted
+/// values, the MAC with `:`, `-`, `.` or no separators. A header without a valid MAC is ignored.
+public struct SSDPWakeUp: Codable, Equatable, Sendable {
+    /// Lowercase, colon-separated: `10:dd:b1:c9:00:e4`.
+    public let macAddress: String
+    /// Seconds the device needs to answer after a Wake-on-LAN packet, when it says.
+    public let timeout: TimeInterval?
+
+    public init(macAddress: String, timeout: TimeInterval? = nil) {
+        self.macAddress = macAddress
+        self.timeout = timeout
+    }
+
+    public init?(_ headerValue: String?) {
+        guard let headerValue else { return nil }
+        var mac: String?
+        var timeout: TimeInterval?
+
+        for field in headerValue.split(whereSeparator: { $0 == ";" || $0 == "," }) {
+            let field = field.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Split at the first "=" only: the MAC itself is full of ":".
+            guard let equals = field.firstIndex(of: "=") else {
+                // A bare value counts if it is a MAC.
+                if mac == nil {
+                    mac = Self.normalizedMAC(Self.unquoted(field))
+                }
+                continue
+            }
+            let name = field[..<equals].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = Self.unquoted(String(field[field.index(after: equals)...]))
+            switch name {
+            case "mac":
+                mac = Self.normalizedMAC(value) ?? mac
+            case "timeout":
+                if let seconds = Double(value), seconds >= 0 {
+                    timeout = seconds
+                }
+            default:
+                continue
+            }
+        }
+
+        guard let mac else { return nil }
+        self.macAddress = mac
+        self.timeout = timeout
+    }
+
+    /// `aa:bb:cc:dd:ee:ff` for any common spelling; nil for anything else, and for the all-zero and broadcast addresses.
+    static func normalizedMAC(_ value: String) -> String? {
+        let hex = value.lowercased().filter { $0 != ":" && $0 != "-" && $0 != "." }
+        guard hex.count == 12, hex.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+              hex != "000000000000", hex != "ffffffffffff" else { return nil }
+
+        var pairs: [String] = []
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            pairs.append(String(hex[index..<next]))
+            index = next
+        }
+        return pairs.joined(separator: ":")
+    }
+
+    private static func unquoted(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

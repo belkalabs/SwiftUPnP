@@ -35,18 +35,21 @@ public struct UPnPDeviceDescription: Codable, Sendable {
     public let url: URL
     public let server: String
     public let lastSeen: Date
-    
-    public init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String = "", lastSeen: Date) {
+    /// The DIAL `WAKEUP` header the device sent, if any.
+    public let wakeUp: SSDPWakeUp?
+
+    public init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String = "", lastSeen: Date, wakeUp: SSDPWakeUp? = nil) {
         self.uuid = uuid
         self.deviceId = deviceId
         self.deviceType = deviceType
         self.url = url
         self.server = server
         self.lastSeen = lastSeen
+        self.wakeUp = wakeUp
     }
 
     private enum CodingKeys: String, CodingKey {
-        case uuid, deviceId, deviceType, url, server, lastSeen
+        case uuid, deviceId, deviceType, url, server, lastSeen, wakeUp
     }
 
     public init(from decoder: Decoder) throws {
@@ -57,6 +60,7 @@ public struct UPnPDeviceDescription: Codable, Sendable {
         url = try container.decode(URL.self, forKey: .url)
         server = try container.decodeIfPresent(String.self, forKey: .server) ?? ""
         lastSeen = try container.decode(Date.self, forKey: .lastSeen)
+        wakeUp = try container.decodeIfPresent(SSDPWakeUp.self, forKey: .wakeUp)
     }
 }
 
@@ -68,9 +72,17 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
     public let server: String
     public var rootXML: String?
     public internal(set) var lastSeen: Date
-    
+    /// What the device's DIAL `WAKEUP` header said (DIAL 2.1 servers: many Android/Google TVs, Samsung, LG). Taken from
+    /// whichever of its search responses carried it: often only the answer to the DIAL search target has it.
+    public internal(set) var wakeUp: SSDPWakeUp?
+
+    /// The MAC to send Wake-on-LAN to, normalized (`10:dd:b1:c9:00:e4`); nil if the device never sent `WAKEUP`.
+    public var wakeOnLANMACAddress: String? {
+        wakeUp?.macAddress
+    }
+
     internal var upnpDeviceDescription: UPnPDeviceDescription {
-        UPnPDeviceDescription(uuid: uuid, deviceId: deviceId, deviceType: deviceType, url: url, server: server, lastSeen: lastSeen)
+        UPnPDeviceDescription(uuid: uuid, deviceId: deviceId, deviceType: deviceType, url: url, server: server, lastSeen: lastSeen, wakeUp: wakeUp)
     }
     
     public var data: Data? {
@@ -89,13 +101,14 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         }
     }
     
-    internal init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String = "", lastSeen: Date) {
+    internal init(uuid: String, deviceId: String, deviceType: String, url: URL, server: String = "", lastSeen: Date, wakeUp: SSDPWakeUp? = nil) {
         self.uuid = uuid
         self.deviceId = deviceId
         self.deviceType = deviceType
         self.url = url
         self.server = server
         self.lastSeen = lastSeen
+        self.wakeUp = wakeUp
         self.servicesLoaded = false
     }
     
@@ -138,6 +151,7 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         self.url = upnpDeviceDescription.url
         self.server = upnpDeviceDescription.server
         self.lastSeen = upnpDeviceDescription.lastSeen
+        self.wakeUp = upnpDeviceDescription.wakeUp
         self.servicesLoaded = false
     }
 
