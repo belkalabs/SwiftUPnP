@@ -65,7 +65,15 @@ public class UPnPRegistry {
     public var deviceRemovedStream: AsyncStream<UPnPDevice> {
         deviceRemoved.stream
     }
-    
+
+    /// The search targets that TVs answer: every root device, DIAL (most smart TVs, Fire TV, Chromecast), the UPnP
+    /// TV device type, and Roku's own ECP target.
+    public static let tvSearchTargets = ["ssdp:all",
+                                         "upnp:rootdevice",
+                                         "urn:dial-multiscreen-org:service:dial:1",
+                                         "urn:schemas-upnp-org:device:tvdevice:1",
+                                         "roku:ecp"]
+
     private let httpServer = HTTPServer()
     private let httpServerPortRange: Range<UInt16>
     private var httpServerPort: UInt16
@@ -262,7 +270,10 @@ public class UPnPRegistry {
         // a new IP address, for example), otherwise its services keep pointing at the old one.
         // The same goes for one that is still being loaded: devices answer each search more than once, and searches
         // are repeated, so loading it again would only produce a second copy of the same device.
-        guard devices.contains(where: { $0.id == device.id && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }) == false else { return }
+        // A device also answers with another USN for each of its types (ssdp:all gets one per device and service),
+        // all with the same uuid and location: its description is loaded once. Devices with another uuid at the same
+        // location (embedded devices) stay separate, so which USN answers first doesn't decide a device's identity.
+        guard devices.contains(where: { ($0.id == device.id || $0.uuid == device.uuid) && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }) == false else { return }
         // The device that is replaced was announced to subscribers, so tell them it is gone before the new one comes.
         let replaced = devices.filter { $0.id == device.id }
         devices.removeAll(where:  { $0.id == device.id })
@@ -298,12 +309,16 @@ public class UPnPRegistry {
         }
     }
 
+    /// - Parameter wholeDevice: remove every registration with the device's uuid, not just the one with its id
+    ///   (a byebye for `upnp:rootdevice`: the device registered under another of its types leaves too).
     @MainActor
-    func remove(_ device: UPnPDevice) {
-        guard let device = devices.first(where: { $0.id == device.id }) else { return }
-        devices.removeAll(where: { $0.id == device.id })
+    func remove(_ device: UPnPDevice, wholeDevice: Bool = false) {
+        let matches: (UPnPDevice) -> Bool = { $0.id == device.id || (wholeDevice && $0.uuid == device.uuid) }
+        let removed = devices.filter(matches)
+        guard !removed.isEmpty else { return }
+        devices.removeAll(where: matches)
         // A device that was still loading was never announced.
-        if device.servicesLoaded {
+        for device in removed where device.servicesLoaded {
             deviceRemovedSubject.send(device)
         }
     }

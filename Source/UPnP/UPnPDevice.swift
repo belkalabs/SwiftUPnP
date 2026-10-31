@@ -149,6 +149,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         "\(uuid)::\(deviceId)"
     }
 
+    /// `uuid` without its `uuid:` prefix: `roku:ecp:P0A070000007` for a Roku, the bare UUID for everything else.
+    /// `uuid` itself keeps the prefix, as it always has, so identities that apps stored stay valid.
+    public var bareUUID: String {
+        uuid.lowercased().hasPrefix("uuid:") ? String(uuid.dropFirst(5)) : uuid
+    }
+
     public func hash(into hasher: inout Hasher) {
         id.hash(into: &hasher)
     }

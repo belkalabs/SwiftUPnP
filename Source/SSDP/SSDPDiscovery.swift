@@ -45,7 +45,7 @@ class SSDPDiscovery: NSObject {
     let multicastUDPPort: UInt16 = 1900
     var types = [String]()
     var requiredDefaultFiltration = false
-    
+
     func searchRequestData(forType type: String) -> Data? {
         ["M-SEARCH * HTTP/1.1",
          "MAN: \"ssdp:discover\"",
@@ -54,12 +54,15 @@ class SSDPDiscovery: NSObject {
          "MX: 5",
          "\r\n"].joined(separator: "\r\n").data(using: .utf8)
     }
-    
+
     func handleSSDPMessage(_ messageType: SSDPMessageType, headers: [String: String]) {
         guard let device = device(from: headers) else { return }
         if messageType == .unavailableNotification {
+            // A byebye for the root device, or for the device itself, means all of it leaves. One for a single
+            // service or embedded device only takes that registration away.
+            let wholeDevice = Self.isWholeDeviceTarget(device.deviceId)
             Task {
-                await UPnPRegistry.shared.remove(device)
+                await UPnPRegistry.shared.remove(device, wholeDevice: wholeDevice)
             }
         }
         else {
@@ -69,55 +72,68 @@ class SSDPDiscovery: NSObject {
         }
     }
 
+    static func isWholeDeviceTarget(_ type: String) -> Bool {
+        let type = type.lowercased()
+        return type == "upnp:rootdevice" || type.hasPrefix("uuid:")
+    }
+
     /// Strict response filtering is optional because TVs also advertise vendor-specific services.
     func device(from headers: [String: String]) -> UPnPDevice? {
-        guard let usnRawValue = headers["usn"] else { return nil }
-        let usnComponents = usnRawValue.components(separatedBy: "::")
-        guard usnComponents.count == 2,
+        guard let usnRawValue = headers["usn"],
+              let usn = SSDPUniqueServiceName(usnRawValue),
               let locationString = headers["location"],
-              let locationURL = URL(string: locationString),
+              let locationURL = URL(string: locationString.trimmingCharacters(in: .whitespacesAndNewlines)),
               /// NT = Notification Type - SSDP discovered from device advertisements
               /// ST = Search Target - SSDP discovered as a result of using M-SEARCH requests
-              let ssdpType = (headers["st"] != nil ? headers["st"] : headers["nt"]),
+              let ssdpType = Self.nonEmpty(headers["st"]) ?? Self.nonEmpty(headers["nt"]) ?? usn.type,
               (!requiredDefaultFiltration || types.contains(ssdpType)) else { return nil }
 
-        return UPnPDevice(uuid: usnComponents[0], deviceId: usnComponents[1], deviceType: ssdpType, url: locationURL, server: headers["server"] ?? "", lastSeen: Date())
+        // A USN without a type (Roku's `uuid:roku:ecp:<serial>`, or a device's own `uuid:<id>`) is told apart
+        // by the target it answered or announced.
+        return UPnPDevice(uuid: usn.device, deviceId: usn.type ?? ssdpType, deviceType: ssdpType, url: locationURL, server: headers["server"] ?? "", lastSeen: Date())
     }
-    
+
+    /// Announcements arrive for every device on the network, not just the searched ones: only take those that
+    /// would also have answered one of the searches.
+    func acceptsAnnouncement(ofType type: String?) -> Bool {
+        guard !types.isEmpty, !types.contains("ssdp:all") else { return true }
+        guard let type else { return false }
+        return types.contains(type)
+    }
+
     func processData(_ data: Data) {
-        if let message = String(data: data, encoding: .utf8) {
-            var httpMethodLine: String?
-            var headers = [String: String]()
-            
-            message.enumerateLines(invoking: { (line, stop) -> () in
-                if httpMethodLine == nil {
-                    httpMethodLine = line
-                } else {
-                    let parts = line.components(separatedBy: ": ")
-                    if parts.count == 2 {
-                        headers[String(parts[0].lowercased())] = String(parts[1])
-                    }
+        guard let message = SSDPMessage(data: data) else { return }
+        var headers = message.headers
+
+        switch message.kind {
+        case .searchResponse:
+            handleSSDPMessage(.searchResponse, headers: headers)
+        case .notification:
+            switch message.notificationSubtype {
+            case "ssdp:byebye":
+                // Byebye messages don't have a location, and a device is removed by its id only. The host
+                // header (the multicast address) is only a stand-in, and needs a scheme to make a valid URL.
+                if Self.nonEmpty(headers["location"]) == nil {
+                    headers["location"] = "http://\(Self.nonEmpty(headers["host"]) ?? "\(multicastGroupAddress):\(multicastUDPPort)")"
                 }
-            })
-            
-            if let httpMethodLine = httpMethodLine {
-                let nts = headers["nts"]
-                switch (httpMethodLine, nts) {
-                case ("HTTP/1.1 200 OK", _):
-                    handleSSDPMessage(.searchResponse, headers: headers)
-                case ("NOTIFY * HTTP/1.1", .some(let notificationType)) where notificationType == "ssdp:alive":
-                    handleSSDPMessage(.availableNotification, headers: headers)
-                case ("NOTIFY * HTTP/1.1", .some(let notificationType)) where notificationType == "ssdp:update":
-                    handleSSDPMessage(.updateNotification, headers: headers)
-                case ("NOTIFY * HTTP/1.1", .some(let notificationType)) where notificationType == "ssdp:byebye":
-                    // Byebye messages don't have a location, and a device is removed by its id only. The host
-                    // header (the multicast address) is only a stand-in, and needs a scheme to make a valid URL.
-                    headers["location"] = "http://\(headers["host"] ?? "\(multicastGroupAddress):\(multicastUDPPort)")"
-                    handleSSDPMessage(.unavailableNotification, headers: headers)
-                default:
-                    return
-                }
+                handleSSDPMessage(.unavailableNotification, headers: headers)
+            case "ssdp:update":
+                guard acceptsAnnouncement(ofType: headers["nt"]) else { return }
+                handleSSDPMessage(.updateNotification, headers: headers)
+            case "ssdp:alive", nil:
+                // A NOTIFY without NTS that still says where the device is counts as an alive.
+                guard acceptsAnnouncement(ofType: headers["nt"]) else { return }
+                handleSSDPMessage(.availableNotification, headers: headers)
+            default:
+                return
             }
+        case .search, .other:
+            return
         }
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
     }
 }
