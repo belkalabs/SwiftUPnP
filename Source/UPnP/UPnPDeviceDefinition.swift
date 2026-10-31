@@ -78,3 +78,58 @@ public struct Service: Decodable {
     public let controlURL: String
     public let eventSubURL: String
 }
+
+// Device descriptions of TVs are not always complete. A missing name or a broken icon list should not make the
+// whole device undiscoverable: missing strings decode as empty, and a list that doesn't decode is left out.
+
+extension UPnPDeviceDefinition {
+    private enum CodingKeys: String, CodingKey {
+        case specVersion, device
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        specVersion = (try? container.decodeIfPresent(SpecVersion.self, forKey: .specVersion)) ?? SpecVersion(major: 1, minor: 0)
+        device = try container.decode(Device.self, forKey: .device)
+    }
+}
+
+extension Device {
+    private enum CodingKeys: String, CodingKey {
+        case deviceType, friendlyName, manufacturer, manufacturerURL, modelDescription, modelName, modelNumber, modelURL
+        case serialNumber, UDN, UPC, iconList, serviceList, presentationURL
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceType = try container.decodeIfPresent(String.self, forKey: .deviceType) ?? ""
+        friendlyName = try container.decodeIfPresent(String.self, forKey: .friendlyName) ?? ""
+        manufacturer = try container.decodeIfPresent(String.self, forKey: .manufacturer) ?? ""
+        manufacturerURL = try container.decodeIfPresent(String.self, forKey: .manufacturerURL)
+        modelDescription = try container.decodeIfPresent(String.self, forKey: .modelDescription)
+        modelName = try container.decodeIfPresent(String.self, forKey: .modelName) ?? ""
+        modelNumber = try container.decodeIfPresent(String.self, forKey: .modelNumber)
+        modelURL = try container.decodeIfPresent(String.self, forKey: .modelURL)
+        serialNumber = try container.decodeIfPresent(String.self, forKey: .serialNumber)
+        UDN = try container.decodeIfPresent(String.self, forKey: .UDN) ?? ""
+        UPC = try container.decodeIfPresent(String.self, forKey: .UPC)
+        iconList = try? container.decodeIfPresent(IconList.self, forKey: .iconList)
+        serviceList = try? container.decodeIfPresent(ServiceList.self, forKey: .serviceList)
+        presentationURL = try container.decodeIfPresent(String.self, forKey: .presentationURL)
+    }
+}
+
+extension Service {
+    private enum CodingKeys: String, CodingKey {
+        case serviceType, serviceId, SCPDURL, controlURL, eventSubURL
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        serviceType = try container.decode(String.self, forKey: .serviceType)
+        serviceId = try container.decodeIfPresent(String.self, forKey: .serviceId) ?? ""
+        SCPDURL = try container.decodeIfPresent(String.self, forKey: .SCPDURL) ?? ""
+        controlURL = try container.decodeIfPresent(String.self, forKey: .controlURL) ?? ""
+        eventSubURL = try container.decodeIfPresent(String.self, forKey: .eventSubURL) ?? ""
+    }
+}
