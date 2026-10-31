@@ -74,6 +74,20 @@ public class UPnPRegistry {
                                          "urn:schemas-upnp-org:device:tvdevice:1",
                                          "roku:ecp"]
 
+    private let discoveryStatusSubject = CurrentValueSubject<SSDPDiscoveryStatus, Never>(.idle)
+    /// Whether discovery can search right now, delivered on the main thread. `.failing` carries a best guess at the
+    /// cause (no Wi-Fi, Local Network access off); discovery keeps retrying meanwhile.
+    public var discoveryStatus: AnyPublisher<SSDPDiscoveryStatus, Never> {
+        discoveryStatusSubject.removeDuplicates().receive(on: RunLoop.main).eraseToAnyPublisher()
+    }
+
+    private let discoveryIssueSubject = PassthroughSubject<SSDPDiscoveryIssue, Never>()
+    /// Every problem discovery runs into, including the ones it works around (e.g. no listening for announcements
+    /// because port 1900 is taken), delivered on the main thread.
+    public var discoveryIssues: AnyPublisher<SSDPDiscoveryIssue, Never> {
+        discoveryIssueSubject.receive(on: RunLoop.main).eraseToAnyPublisher()
+    }
+
     private let httpServer = HTTPServer()
     private let httpServerPortRange: Range<UInt16>
     private var httpServerPort: UInt16
@@ -110,6 +124,13 @@ public class UPnPRegistry {
         }
 
         eventCallbackUrl = callbackUrl()
+
+        discoveryEngine.onStatusChange = { [weak self] status in
+            self?.discoveryStatusSubject.send(status)
+        }
+        discoveryEngine.onIssue = { [weak self] issue in
+            self?.discoveryIssueSubject.send(issue)
+        }
     }
 
     public func startDiscovery(_ types: [String] = ["urn:schemas-upnp-org:device:MediaServer:1", "urn:linn-co-uk:device:Source:1", "urn:av-openhome-org:device:Source:1"], requiredDefaultFiltration: Bool = false) throws {
@@ -129,6 +150,32 @@ public class UPnPRegistry {
             } catch {
                 Logger.swiftUPnP.error("Could not start SSDP discovery: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Keep searching for as long as discovery runs: a burst at 0, 1, 3 and 5 s, then every 15 s (by default).
+    /// Devices answering late, or only coming online later, still show up. NOTIFY alive and byebye
+    /// announcements of devices with these types are handled in between.
+    ///
+    /// When discovery already runs (in either mode) it switches to these types and schedule, and the burst starts
+    /// again. Responses are not filtered by type. Stop with `stopDiscovery()`.
+    /// - Parameters:
+    ///   - types: search targets (ST), each sent at every step of the schedule.
+    ///   - schedule: when the searches go out.
+    public func startContinuousDiscovery(_ types: [String] = UPnPRegistry.tvSearchTargets, schedule: SSDPSearchSchedule = .continuous) {
+        Task { @MainActor in
+            await startHTTPServerIfNotRunning()
+            discoveryEngine.requiredDefaultFiltration = false
+            discoveryEngine.startOrUpdate(forTypes: types, schedule: schedule)
+        }
+    }
+
+    /// Search right away and start the burst of the current schedule over, e.g. when the app comes back to the
+    /// foreground or the network changed. Does nothing when discovery doesn't run. Network changes are already
+    /// handled: the sockets are reopened and a burst starts on their own.
+    public func searchNow() {
+        Task { @MainActor in
+            discoveryEngine.searchNow()
         }
     }
 
