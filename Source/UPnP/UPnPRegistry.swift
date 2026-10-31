@@ -88,6 +88,10 @@ public class UPnPRegistry {
         discoveryIssueSubject.receive(on: RunLoop.main).eraseToAnyPublisher()
     }
 
+    /// Bumped synchronously by every start and stop call. A start's task checks it after awaiting the HTTP server,
+    /// so a stop issued in the meantime isn't undone by the start finishing later.
+    private let discoveryGeneration = DiscoveryGeneration()
+
     private let httpServer = HTTPServer()
     private let httpServerPortRange: Range<UInt16>
     private var httpServerPort: UInt16
@@ -140,9 +144,12 @@ public class UPnPRegistry {
             return
         }
 
+        let generation = discoveryGeneration.next()
         // The discovery engine keeps its state on the main queue, like its socket callbacks.
         Task { @MainActor in
             await startHTTPServerIfNotRunning()
+            // A stop (or another start) that came in while the server was starting wins.
+            guard discoveryGeneration.isCurrent(generation) else { return }
             discoveryEngine.requiredDefaultFiltration = requiredDefaultFiltration
             do {
                 try discoveryEngine.startDiscovery(forTypes: filteredTypes)
@@ -163,8 +170,12 @@ public class UPnPRegistry {
     ///   - types: search targets (ST), each sent at every step of the schedule.
     ///   - schedule: when the searches go out.
     public func startContinuousDiscovery(_ types: [String] = UPnPRegistry.tvSearchTargets, schedule: SSDPSearchSchedule = .continuous) {
+        let generation = discoveryGeneration.next()
         Task { @MainActor in
             await startHTTPServerIfNotRunning()
+            // A stop that came in while the server was starting wins: without this check, continuous discovery kept
+            // searching after `stopDiscovery()` until the next start.
+            guard discoveryGeneration.isCurrent(generation) else { return }
             discoveryEngine.requiredDefaultFiltration = false
             discoveryEngine.startOrUpdate(forTypes: types, schedule: schedule)
         }
@@ -179,6 +190,12 @@ public class UPnPRegistry {
         }
     }
 
+    /// Whether the discovery engine runs (searching, or waiting to reopen its sockets).
+    @MainActor
+    var isDiscoveryRunning: Bool {
+        discoveryEngine.isRunning
+    }
+
     public func setDiscoveryDelegate(_ delegate: DiscoveryDelegate) {
         Task { @MainActor in
             discoveryEngine.delegate = delegate
@@ -186,6 +203,7 @@ public class UPnPRegistry {
     }
     
     public func stopDiscovery() {
+        _ = discoveryGeneration.next()
         Task { @MainActor in
             discoveryEngine.stopDiscovery()
             stopHTTPServer()
@@ -321,6 +339,12 @@ public class UPnPRegistry {
         // all with the same uuid and location: its description is loaded once. Devices with another uuid at the same
         // location (embedded devices) stay separate, so which USN answers first doesn't decide a device's identity.
         guard devices.contains(where: { ($0.id == device.id || $0.uuid == device.uuid) && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }) == false else { return }
+        // A description that just failed to load (device asleep, wrong port, not HTTP at all) isn't fetched again on
+        // every answer: with continuous discovery that was a request every few seconds per failing device.
+        let failureKey = Self.descriptionFailureKey(device)
+        if let failedAt = failedDescriptions[failureKey], now().timeIntervalSince(failedAt) < Self.failedDescriptionRetryInterval {
+            return
+        }
         // The device that is replaced was announced to subscribers, so tell them it is gone before the new one comes.
         let replaced = devices.filter { $0.id == device.id }
         devices.removeAll(where:  { $0.id == device.id })
@@ -335,8 +359,10 @@ public class UPnPRegistry {
             defer { loadingDevices.remove(ObjectIdentifier(device)) }
             guard await device.loadRoot() == true else {
                 Logger.swiftUPnP.error("Failed to load root on \(device.url)")
+                failedDescriptions[failureKey] = now()
                 return
             }
+            failedDescriptions[failureKey] = nil
             // Replaced or removed while loading the description: don't register services for a device nobody holds.
             guard devices.contains(where: { $0 === device }) else { return }
             
@@ -354,6 +380,22 @@ public class UPnPRegistry {
             guard devices.contains(where: { $0 === device }) else { return }
             deviceAddedSubject.send(device)
         }
+    }
+
+    /// How long a device whose description failed to load is left alone. Its answers keep coming in meanwhile.
+    static let failedDescriptionRetryInterval: TimeInterval = 60
+
+    /// Description loads that failed recently, by uuid and location. Kept across searches: a device that fails
+    /// keeps failing for a while, and the interval is short.
+    @MainActor
+    private var failedDescriptions = [String: Date]()
+
+    /// The clock for `failedDescriptions` (replaced in tests).
+    @MainActor
+    var now: () -> Date = Date.init
+
+    private static func descriptionFailureKey(_ device: UPnPDevice) -> String {
+        "\(device.uuid)|\(device.url.absoluteString)"
     }
 
     /// - Parameter wholeDevice: remove every registration with the device's uuid, not just the one with its id
@@ -593,5 +635,24 @@ public class UPnPRegistry {
                                eventPublisher: eventPublisher,
                                eventCallbackUrl: eventCallbackUrl)
         }
+    }
+}
+
+/// A counter that can be bumped from any thread.
+final class DiscoveryGeneration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+
+    func isCurrent(_ generation: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value == generation
     }
 }
