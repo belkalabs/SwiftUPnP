@@ -68,6 +68,12 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
     private var failedRecoveries = 0
     /// The network path has neither Wi-Fi nor Ethernet: a search that "goes out" then reaches no TV.
     private var lacksLocalNetwork = false
+    /// The local interfaces and addresses the sockets were opened for. Only a change of these reopens them.
+    private var networkSignature: SSDPLocalNetworkSignature?
+    /// The pending reopen of the announcement socket alone.
+    private var announcementReopenWorkItem: DispatchWorkItem?
+    /// An announcement socket that keeps closing is reopened at 2, 4, 8… up to 60 s, not every 2 s.
+    private var announcementBackoff = SSDPBackoff(initial: 2, maximum: 60)
     private lazy var scheduler = SSDPSearchScheduler { [weak self] in
         self?.sendSearchRequests()
     }
@@ -81,6 +87,7 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
         reopenWorkItem = nil
         isRunning = true
         failedRecoveries = 0
+        announcementBackoff.reset()
         startMonitoringNetworkChanges()
         do {
             try openSockets()
@@ -111,9 +118,12 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
         isRunning = false
         reopenWorkItem?.cancel()
         reopenWorkItem = nil
+        announcementReopenWorkItem?.cancel()
+        announcementReopenWorkItem = nil
         scheduler.stop()
         pathMonitor?.cancel()
         pathMonitor = nil
+        networkSignature = nil
         types = []
         lacksLocalNetwork = false
         closeSockets()
@@ -242,6 +252,8 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.generation == generation, self.isRunning, !self.types.isEmpty else { return }
             self.reopenWorkItem = nil
+            self.announcementReopenWorkItem?.cancel()
+            self.announcementReopenWorkItem = nil
             self.closeSockets()
             do {
                 try self.openSockets()
@@ -254,6 +266,24 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
             }
         }
         reopenWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    /// Reopen the announcement socket alone, later each time it fails again. Searching isn't affected, so the search
+    /// socket stays open and no burst starts (before, every close reopened both sockets and searched, every 2 s).
+    private func reopenAnnouncementSocket() {
+        announcementReopenWorkItem?.cancel()
+        let generation = self.generation
+        let delay = announcementBackoff.nextDelay()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == generation, self.isRunning, self.announcementSocket == nil else { return }
+            self.announcementReopenWorkItem = nil
+            self.openAnnouncementSocket()
+            if self.announcementSocket == nil {
+                self.reopenAnnouncementSocket()
+            }
+        }
+        announcementReopenWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
@@ -272,17 +302,23 @@ class SSDPCocoaAsyncSocketDiscovery: SSDPDiscovery {
         var isFirstUpdate = true
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
-            self.lacksLocalNetwork = !path.availableInterfaces.contains { $0.type == .wifi || $0.type == .wiredEthernet }
+            let signature = SSDPLocalNetworkSignature.current(path)
+            self.lacksLocalNetwork = signature.isEmpty
             if self.lacksLocalNetwork {
                 self.report(.noWiFi, failing: true)
             }
+            let previous = self.networkSignature
+            self.networkSignature = signature
             // The first update only reports the current situation.
             guard !isFirstUpdate else {
                 isFirstUpdate = false
                 return
             }
-            guard path.status == .satisfied else { return }
+            // Cellular coming and going, or the path's status changing, doesn't concern SSDP: only another Wi-Fi,
+            // wired or hotspot interface, or a new address on one, needs new sockets (and the group joined again).
+            guard signature != previous, !signature.isEmpty else { return }
             self.failedRecoveries = 0
+            self.announcementBackoff.reset()
             self.reopenSocket(after: 1)
         }
         monitor.start(queue: DispatchQueue.main)
@@ -313,7 +349,7 @@ extension SSDPCocoaAsyncSocketDiscovery: GCDAsyncUdpSocketDelegate {
         // Closed by stopDiscovery or reopenSocket: nothing to do.
         if sock === announcementSocket {
             announcementSocket = nil
-            reopenSocket(after: 2)
+            reopenAnnouncementSocket()
             return
         }
         guard sock === multicastSocket else { return }
@@ -324,6 +360,10 @@ extension SSDPCocoaAsyncSocketDiscovery: GCDAsyncUdpSocketDelegate {
     }
 
     public func udpSocket(_ sock: GCDAsyncUdpSocket, didReceive data: Data, fromAddress address: Data, withFilterContext filterContext: Any?) {
+        if sock === announcementSocket {
+            // It works again: the next close starts the back-off over.
+            announcementBackoff.reset()
+        }
         processData(data)
     }
 }

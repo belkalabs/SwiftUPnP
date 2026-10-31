@@ -25,6 +25,15 @@
 - Device descriptions: 5 s timeout and one retry after a timeout, connection
   error, empty answer or 5xx. Missing names, specVersion or service URLs and
   broken icon lists no longer fail the whole description.
+- A `stopDiscovery()` issued while discovery was still starting (awaiting the
+  HTTP server) is no longer undone by the start finishing later.
+- A description that failed to load is not fetched again for 60 s per uuid and
+  location, instead of on every answer.
+- The announcement socket is reopened on its own after a close, at 2, 4, 8…
+  up to 60 s, without reopening the search socket or starting a burst.
+- Sockets are reopened only when the Wi-Fi, wired or Personal Hotspot
+  interfaces or their IPv4 addresses change, not on every path update
+  (cellular coming and going).
 
 ## 1.2.0 - 2026-10-30
 
