@@ -338,7 +338,20 @@ public class UPnPRegistry {
         // A device also answers with another USN for each of its types (ssdp:all gets one per device and service),
         // all with the same uuid and location: its description is loaded once. Devices with another uuid at the same
         // location (embedded devices) stay separate, so which USN answers first doesn't decide a device's identity.
-        guard devices.contains(where: { ($0.id == device.id || $0.uuid == device.uuid) && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }) == false else { return }
+        let known = devices.filter { ($0.id == device.id || $0.uuid == device.uuid) && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }
+        guard known.isEmpty else {
+            // Often only the answer to the DIAL search target carries `WAKEUP`, and it needn't be the first answer:
+            // the device that is already known takes it over, and subscribers hear about it again once it is loaded.
+            if let wakeUp = device.wakeUp {
+                for existing in known where existing.wakeUp != wakeUp {
+                    existing.wakeUp = wakeUp
+                    if existing.servicesLoaded {
+                        deviceAddedSubject.send(existing)
+                    }
+                }
+            }
+            return
+        }
         // A description that just failed to load (device asleep, wrong port, not HTTP at all) isn't fetched again on
         // every answer: with continuous discovery that was a request every few seconds per failing device.
         let failureKey = Self.descriptionFailureKey(device)

@@ -343,4 +343,80 @@ final class SSDPMessageParsingTests: XCTestCase {
         XCTAssertNil(SSDPUniqueServiceName(""))
         XCTAssertNil(SSDPUniqueServiceName("::upnp:rootdevice"))
     }
+
+    // MARK: - DIAL WAKEUP
+
+    func testDIALResponseWithWakeUpCarriesTheMAC() throws {
+        let discovery = discovery()
+        discovery.processData(crlf(["HTTP/1.1 200 OK",
+                                    "CACHE-CONTROL: max-age=1800",
+                                    "EXT:",
+                                    "LOCATION: http://192.168.1.40:8008/ssdp/device-desc.xml",
+                                    "SERVER: Linux/4.9, UPnP/1.0, Portable SDK for UPnP devices/1.6.25",
+                                    "ST: urn:dial-multiscreen-org:service:dial:1",
+                                    "USN: uuid:3e1cc7c3-f4f1-4e5b-8cfe-e6a5a0e4d000::urn:dial-multiscreen-org:service:dial:1",
+                                    "WAKEUP: MAC=10:dd:b1:c9:00:e4;Timeout=10"]))
+
+        let (_, device) = try onlyDevice(discovery)
+        XCTAssertEqual(device.wakeOnLANMACAddress, "10:dd:b1:c9:00:e4")
+        XCTAssertEqual(device.wakeUp?.timeout, 10)
+    }
+
+    func testResponseWithoutWakeUpHasNoMAC() throws {
+        let discovery = discovery()
+        discovery.processData(crlf(rokuResponse))
+
+        XCTAssertNil(try onlyDevice(discovery).1.wakeOnLANMACAddress)
+    }
+
+    func testWakeUpHeaderIsReadInAnyCase() throws {
+        let discovery = discovery()
+        discovery.processData(crlf(["HTTP/1.1 200 OK",
+                                    "location: http://192.168.1.41:8008/ssdp/device-desc.xml",
+                                    "st: urn:dial-multiscreen-org:service:dial:1",
+                                    "usn: uuid:abc::urn:dial-multiscreen-org:service:dial:1",
+                                    "wakeup: mac=10-DD-B1-C9-00-E4; timeout=15"]))
+
+        let (_, device) = try onlyDevice(discovery)
+        XCTAssertEqual(device.wakeOnLANMACAddress, "10:dd:b1:c9:00:e4")
+        XCTAssertEqual(device.wakeUp?.timeout, 15)
+    }
+
+    func testWakeUpParsingIsLenient() {
+        XCTAssertEqual(SSDPWakeUp("MAC=10:dd:b1:c9:00:e4;Timeout=10"), SSDPWakeUp(macAddress: "10:dd:b1:c9:00:e4", timeout: 10))
+        // Order, spacing, separators, quotes and the MAC's spelling vary between vendors.
+        XCTAssertEqual(SSDPWakeUp(" Timeout = 30 , MAC = \"10DDB1C900E4\" ")?.macAddress, "10:dd:b1:c9:00:e4")
+        XCTAssertEqual(SSDPWakeUp(" Timeout = 30 , MAC = \"10DDB1C900E4\" ")?.timeout, 30)
+        XCTAssertEqual(SSDPWakeUp("mac=10dd.b1c9.00e4")?.macAddress, "10:dd:b1:c9:00:e4")
+        XCTAssertEqual(SSDPWakeUp("MAC=10:DD:B1:C9:00:E4;")?.macAddress, "10:dd:b1:c9:00:e4")
+        XCTAssertEqual(SSDPWakeUp("MAC=10:dd:b1:c9:00:e4;Timeout=soon")?.timeout, nil)
+        XCTAssertEqual(SSDPWakeUp("MAC=10:dd:b1:c9:00:e4;Vendor=x;Timeout=5")?.timeout, 5)
+        // Only the MAC, without its name.
+        XCTAssertEqual(SSDPWakeUp("10:dd:b1:c9:00:e4")?.macAddress, "10:dd:b1:c9:00:e4")
+    }
+
+    func testWakeUpWithoutAUsableMACIsIgnored() {
+        XCTAssertNil(SSDPWakeUp(nil))
+        XCTAssertNil(SSDPWakeUp(""))
+        XCTAssertNil(SSDPWakeUp("Timeout=10"))
+        XCTAssertNil(SSDPWakeUp("MAC=;Timeout=10"))
+        XCTAssertNil(SSDPWakeUp("MAC=10:dd:b1:c9:00"))
+        XCTAssertNil(SSDPWakeUp("MAC=10:dd:b1:c9:00:e4:ff"))
+        XCTAssertNil(SSDPWakeUp("MAC=zz:dd:b1:c9:00:e4"))
+        XCTAssertNil(SSDPWakeUp("MAC=00:00:00:00:00:00"))
+        XCTAssertNil(SSDPWakeUp("MAC=ff:ff:ff:ff:ff:ff"))
+    }
+
+    func testWakeUpSurvivesTheStoredDescription() throws {
+        let device = UPnPDevice(uuid: "uuid:abc", deviceId: "upnp:rootdevice", deviceType: "upnp:rootdevice",
+                                url: try XCTUnwrap(URL(string: "http://192.168.1.40:8008/")), lastSeen: Date(),
+                                wakeUp: SSDPWakeUp(macAddress: "10:dd:b1:c9:00:e4", timeout: 10))
+        let restored = try XCTUnwrap(UPnPDevice.reanimate(from: try XCTUnwrap(device.data)))
+        XCTAssertEqual(restored.wakeOnLANMACAddress, "10:dd:b1:c9:00:e4")
+
+        // Descriptions stored before the header was read still load.
+        let old = Data(#"{"uuid":"uuid:abc","deviceId":"upnp:rootdevice","deviceType":"upnp:rootdevice","url":"http://192.168.1.40:8008/","lastSeen":0}"#.utf8)
+        let restoredOld = try XCTUnwrap(UPnPDevice.reanimate(from: old))
+        XCTAssertNil(restoredOld.wakeOnLANMACAddress)
+    }
 }

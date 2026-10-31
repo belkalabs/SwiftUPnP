@@ -90,7 +90,8 @@ class SSDPDiscovery: NSObject {
 
         // A USN without a type (Roku's `uuid:roku:ecp:<serial>`, or a device's own `uuid:<id>`) is told apart
         // by the target it answered or announced.
-        return UPnPDevice(uuid: usn.device, deviceId: usn.type ?? ssdpType, deviceType: ssdpType, url: locationURL, server: headers["server"] ?? "", lastSeen: Date())
+        return UPnPDevice(uuid: usn.device, deviceId: usn.type ?? ssdpType, deviceType: ssdpType, url: locationURL, server: headers["server"] ?? "", lastSeen: Date(),
+                          wakeUp: SSDPWakeUp(headers["wakeup"]))
     }
 
     /// Announcements arrive for every device on the network, not just the searched ones: only take those that
