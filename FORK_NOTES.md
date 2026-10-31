@@ -21,8 +21,8 @@ interfaces used by Belkalabs remote apps.
   remain available. The callback reports unexpected socket closures.
 - Active SSDP searches keep an ephemeral local port, the `en0` multicast
   interface, a five-second response window and no User-Agent header.
-  Passive multicast announcements on port 1900 are not guaranteed by this
-  active-search configuration.
+  Announcements are heard on a separate socket bound to port 1900; when that
+  port can't be bound, searching works as before and the problem is reported.
 - Socket recovery, network monitoring and discovery callbacks share the main
   queue, following the new upstream lifecycle.
 - CocoaAsyncSocket remains pinned to the previously deployed revision.

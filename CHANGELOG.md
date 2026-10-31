@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased (fix/discovery-reliability)
+
+- Accept USNs without `::`, such as Roku's `uuid:roku:ecp:<serial>`: Roku's own
+  ECP answer was always dropped. `UPnPDevice.uuid` keeps its `uuid:` prefix;
+  the new `bareUUID` has it without.
+- Parse SSDP leniently: header names in any case, LF-only lines, padded
+  values, no space after the colon, repeated headers (first value wins),
+  missing CACHE-CONTROL/EXT/SERVER, `HTTP/1.0`, no reason phrase, Latin-1
+  bytes, and unknown start lines judged by their headers.
+- Continuous discovery: `startContinuousDiscovery(_:schedule:)` searches in a
+  burst at 0, 1, 3 and 5 s, then every 15 s; `searchNow()` starts the burst
+  over. `tvSearchTargets` lists the default search targets.
+  `startDiscovery(_:requiredDefaultFiltration:)` keeps its 0/3/10 s schedule.
+- Hear NOTIFY alive and byebye on a second socket bound to port 1900. A
+  byebye for `upnp:rootdevice` removes the device under all of its types.
+- One description load per device uuid and location, however many search
+  targets it answers.
+- A failed multicast join no longer stops searching. Problems are published
+  through `discoveryStatus`, `discoveryIssues` and
+  `DiscoveryDelegate.discoveryDidReportIssue(_:)` with a likely cause (no
+  Wi-Fi, Local Network access off). Searches go out on `en0`. Stale sockets
+  are reopened with a back-off.
+- Device descriptions: 5 s timeout and one retry after a timeout, connection
+  error, empty answer or 5xx. Missing names, specVersion or service URLs and
+  broken icon lists no longer fail the whole description.
+- A `stopDiscovery()` issued while discovery was still starting (awaiting the
+  HTTP server) is no longer undone by the start finishing later.
+- A description that failed to load is not fetched again for 60 s per uuid and
+  location, instead of on every answer.
+- The announcement socket is reopened on its own after a close, at 2, 4, 8…
+  up to 60 s, without reopening the search socket or starting a burst.
+- Sockets are reopened only when the Wi-Fi, wired or Personal Hotspot
+  interfaces or their IPv4 addresses change, not on every path update
+  (cellular coming and going).
+
 ## 1.2.0 - 2026-10-30
 
 - Update to katoemba/SwiftUPnP at `fcd298d`, including network recovery,

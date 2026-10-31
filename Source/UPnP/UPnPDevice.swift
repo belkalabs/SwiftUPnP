@@ -149,6 +149,12 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         "\(uuid)::\(deviceId)"
     }
 
+    /// `uuid` without its `uuid:` prefix: `roku:ecp:P0A070000007` for a Roku, the bare UUID for everything else.
+    /// `uuid` itself keeps the prefix, as it always has, so identities that apps stored stay valid.
+    public var bareUUID: String {
+        uuid.lowercased().hasPrefix("uuid:") ? String(uuid.dropFirst(5)) : uuid
+    }
+
     public func hash(into hasher: inout Hasher) {
         id.hash(into: &hasher)
     }
@@ -189,17 +195,53 @@ public class UPnPDevice: Equatable, Identifiable, Hashable {
         return true
     }
     
-    func loadRoot() async -> Bool {
-        var request = URLRequest(url: url, timeoutInterval: 3.0)
+    typealias DescriptionTransport = (URLRequest) async throws -> (Data, URLResponse)
+
+    /// TVs that just woke up, or are busy starting an app, take seconds to serve their description.
+    static let descriptionTimeout: TimeInterval = 5
+    static let descriptionRetryDelay: TimeInterval = 1
+
+    /// Fetch the device description, with one retry after a timeout, a connection error, an empty answer or a
+    /// server error. Other HTTP errors are final.
+    static func fetchDescription(from url: URL,
+                                 timeout: TimeInterval = descriptionTimeout,
+                                 retryDelay: TimeInterval = descriptionRetryDelay,
+                                 transport: DescriptionTransport = { try await URLSession.shared.data(for: $0) }) async -> Data? {
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.httpMethod = "GET"
-        
-        guard let (data, _) = try? await URLSession.shared.data(for: request) else {
-            Logger.swiftUPnP.error("Error: couldn't load device description from \(self.url.absoluteString)")
-            return false
+
+        for attempt in 1...2 {
+            if attempt > 1 {
+                try? await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
+            }
+            do {
+                let (data, response) = try await transport(request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+                if (200..<300).contains(status), !data.isEmpty {
+                    return data
+                }
+                Logger.swiftUPnP.error("Device description from \(url.absoluteString) answered \(status) with \(data.count) bytes")
+                guard status >= 500 || data.isEmpty else { return nil }
+            }
+            catch {
+                Logger.swiftUPnP.error("Error: couldn't load device description from \(url.absoluteString): \(error.localizedDescription)")
+            }
         }
-        
-        rootXML = String(data: data, encoding: .utf8)
+        return nil
+    }
+
+    func loadRoot(transport: DescriptionTransport? = nil, retryDelay: TimeInterval = descriptionRetryDelay) async -> Bool {
+        let data: Data?
+        if let transport {
+            data = await Self.fetchDescription(from: url, retryDelay: retryDelay, transport: transport)
+        }
+        else {
+            data = await Self.fetchDescription(from: url, retryDelay: retryDelay)
+        }
+        guard let data else { return false }
+
+        rootXML = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
 
         do {
             let decoder = XMLDecoder()

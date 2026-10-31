@@ -65,7 +65,33 @@ public class UPnPRegistry {
     public var deviceRemovedStream: AsyncStream<UPnPDevice> {
         deviceRemoved.stream
     }
-    
+
+    /// The search targets that TVs answer: every root device, DIAL (most smart TVs, Fire TV, Chromecast), the UPnP
+    /// TV device type, and Roku's own ECP target.
+    public static let tvSearchTargets = ["ssdp:all",
+                                         "upnp:rootdevice",
+                                         "urn:dial-multiscreen-org:service:dial:1",
+                                         "urn:schemas-upnp-org:device:tvdevice:1",
+                                         "roku:ecp"]
+
+    private let discoveryStatusSubject = CurrentValueSubject<SSDPDiscoveryStatus, Never>(.idle)
+    /// Whether discovery can search right now, delivered on the main thread. `.failing` carries a best guess at the
+    /// cause (no Wi-Fi, Local Network access off); discovery keeps retrying meanwhile.
+    public var discoveryStatus: AnyPublisher<SSDPDiscoveryStatus, Never> {
+        discoveryStatusSubject.removeDuplicates().receive(on: RunLoop.main).eraseToAnyPublisher()
+    }
+
+    private let discoveryIssueSubject = PassthroughSubject<SSDPDiscoveryIssue, Never>()
+    /// Every problem discovery runs into, including the ones it works around (e.g. no listening for announcements
+    /// because port 1900 is taken), delivered on the main thread.
+    public var discoveryIssues: AnyPublisher<SSDPDiscoveryIssue, Never> {
+        discoveryIssueSubject.receive(on: RunLoop.main).eraseToAnyPublisher()
+    }
+
+    /// Bumped synchronously by every start and stop call. A start's task checks it after awaiting the HTTP server,
+    /// so a stop issued in the meantime isn't undone by the start finishing later.
+    private let discoveryGeneration = DiscoveryGeneration()
+
     private let httpServer = HTTPServer()
     private let httpServerPortRange: Range<UInt16>
     private var httpServerPort: UInt16
@@ -102,6 +128,13 @@ public class UPnPRegistry {
         }
 
         eventCallbackUrl = callbackUrl()
+
+        discoveryEngine.onStatusChange = { [weak self] status in
+            self?.discoveryStatusSubject.send(status)
+        }
+        discoveryEngine.onIssue = { [weak self] issue in
+            self?.discoveryIssueSubject.send(issue)
+        }
     }
 
     public func startDiscovery(_ types: [String] = ["urn:schemas-upnp-org:device:MediaServer:1", "urn:linn-co-uk:device:Source:1", "urn:av-openhome-org:device:Source:1"], requiredDefaultFiltration: Bool = false) throws {
@@ -111,9 +144,12 @@ public class UPnPRegistry {
             return
         }
 
+        let generation = discoveryGeneration.next()
         // The discovery engine keeps its state on the main queue, like its socket callbacks.
         Task { @MainActor in
             await startHTTPServerIfNotRunning()
+            // A stop (or another start) that came in while the server was starting wins.
+            guard discoveryGeneration.isCurrent(generation) else { return }
             discoveryEngine.requiredDefaultFiltration = requiredDefaultFiltration
             do {
                 try discoveryEngine.startDiscovery(forTypes: filteredTypes)
@@ -124,6 +160,42 @@ public class UPnPRegistry {
         }
     }
 
+    /// Keep searching for as long as discovery runs: a burst at 0, 1, 3 and 5 s, then every 15 s (by default).
+    /// Devices answering late, or only coming online later, still show up. NOTIFY alive and byebye
+    /// announcements of devices with these types are handled in between.
+    ///
+    /// When discovery already runs (in either mode) it switches to these types and schedule, and the burst starts
+    /// again. Responses are not filtered by type. Stop with `stopDiscovery()`.
+    /// - Parameters:
+    ///   - types: search targets (ST), each sent at every step of the schedule.
+    ///   - schedule: when the searches go out.
+    public func startContinuousDiscovery(_ types: [String] = UPnPRegistry.tvSearchTargets, schedule: SSDPSearchSchedule = .continuous) {
+        let generation = discoveryGeneration.next()
+        Task { @MainActor in
+            await startHTTPServerIfNotRunning()
+            // A stop that came in while the server was starting wins: without this check, continuous discovery kept
+            // searching after `stopDiscovery()` until the next start.
+            guard discoveryGeneration.isCurrent(generation) else { return }
+            discoveryEngine.requiredDefaultFiltration = false
+            discoveryEngine.startOrUpdate(forTypes: types, schedule: schedule)
+        }
+    }
+
+    /// Search right away and start the burst of the current schedule over, e.g. when the app comes back to the
+    /// foreground or the network changed. Does nothing when discovery doesn't run. Network changes are already
+    /// handled: the sockets are reopened and a burst starts on their own.
+    public func searchNow() {
+        Task { @MainActor in
+            discoveryEngine.searchNow()
+        }
+    }
+
+    /// Whether the discovery engine runs (searching, or waiting to reopen its sockets).
+    @MainActor
+    var isDiscoveryRunning: Bool {
+        discoveryEngine.isRunning
+    }
+
     public func setDiscoveryDelegate(_ delegate: DiscoveryDelegate) {
         Task { @MainActor in
             discoveryEngine.delegate = delegate
@@ -131,6 +203,7 @@ public class UPnPRegistry {
     }
     
     public func stopDiscovery() {
+        _ = discoveryGeneration.next()
         Task { @MainActor in
             discoveryEngine.stopDiscovery()
             stopHTTPServer()
@@ -262,7 +335,16 @@ public class UPnPRegistry {
         // a new IP address, for example), otherwise its services keep pointing at the old one.
         // The same goes for one that is still being loaded: devices answer each search more than once, and searches
         // are repeated, so loading it again would only produce a second copy of the same device.
-        guard devices.contains(where: { $0.id == device.id && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }) == false else { return }
+        // A device also answers with another USN for each of its types (ssdp:all gets one per device and service),
+        // all with the same uuid and location: its description is loaded once. Devices with another uuid at the same
+        // location (embedded devices) stay separate, so which USN answers first doesn't decide a device's identity.
+        guard devices.contains(where: { ($0.id == device.id || $0.uuid == device.uuid) && $0.url == device.url && ($0.servicesLoaded == true || loadingDevices.contains(ObjectIdentifier($0))) }) == false else { return }
+        // A description that just failed to load (device asleep, wrong port, not HTTP at all) isn't fetched again on
+        // every answer: with continuous discovery that was a request every few seconds per failing device.
+        let failureKey = Self.descriptionFailureKey(device)
+        if let failedAt = failedDescriptions[failureKey], now().timeIntervalSince(failedAt) < Self.failedDescriptionRetryInterval {
+            return
+        }
         // The device that is replaced was announced to subscribers, so tell them it is gone before the new one comes.
         let replaced = devices.filter { $0.id == device.id }
         devices.removeAll(where:  { $0.id == device.id })
@@ -277,8 +359,10 @@ public class UPnPRegistry {
             defer { loadingDevices.remove(ObjectIdentifier(device)) }
             guard await device.loadRoot() == true else {
                 Logger.swiftUPnP.error("Failed to load root on \(device.url)")
+                failedDescriptions[failureKey] = now()
                 return
             }
+            failedDescriptions[failureKey] = nil
             // Replaced or removed while loading the description: don't register services for a device nobody holds.
             guard devices.contains(where: { $0 === device }) else { return }
             
@@ -298,12 +382,32 @@ public class UPnPRegistry {
         }
     }
 
+    /// How long a device whose description failed to load is left alone. Its answers keep coming in meanwhile.
+    static let failedDescriptionRetryInterval: TimeInterval = 60
+
+    /// Description loads that failed recently, by uuid and location. Kept across searches: a device that fails
+    /// keeps failing for a while, and the interval is short.
     @MainActor
-    func remove(_ device: UPnPDevice) {
-        guard let device = devices.first(where: { $0.id == device.id }) else { return }
-        devices.removeAll(where: { $0.id == device.id })
+    private var failedDescriptions = [String: Date]()
+
+    /// The clock for `failedDescriptions` (replaced in tests).
+    @MainActor
+    var now: () -> Date = Date.init
+
+    private static func descriptionFailureKey(_ device: UPnPDevice) -> String {
+        "\(device.uuid)|\(device.url.absoluteString)"
+    }
+
+    /// - Parameter wholeDevice: remove every registration with the device's uuid, not just the one with its id
+    ///   (a byebye for `upnp:rootdevice`: the device registered under another of its types leaves too).
+    @MainActor
+    func remove(_ device: UPnPDevice, wholeDevice: Bool = false) {
+        let matches: (UPnPDevice) -> Bool = { $0.id == device.id || (wholeDevice && $0.uuid == device.uuid) }
+        let removed = devices.filter(matches)
+        guard !removed.isEmpty else { return }
+        devices.removeAll(where: matches)
         // A device that was still loading was never announced.
-        if device.servicesLoaded {
+        for device in removed where device.servicesLoaded {
             deviceRemovedSubject.send(device)
         }
     }
@@ -531,5 +635,24 @@ public class UPnPRegistry {
                                eventPublisher: eventPublisher,
                                eventCallbackUrl: eventCallbackUrl)
         }
+    }
+}
+
+/// A counter that can be bumped from any thread.
+final class DiscoveryGeneration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+
+    func isCurrent(_ generation: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value == generation
     }
 }
