@@ -66,7 +66,13 @@ struct IPHelper {
             }
         } ()
         
-        if ioctl(socket(AF_INET, SOCK_DGRAM, 0), UInt(ioRequest), &ifr) < 0 {
+        // The socket used to be leaked on every call; network changes now look up addresses each time.
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else {
+            throw POSIXError (POSIXErrorCode (rawValue: errno) ?? POSIXErrorCode.EINVAL)
+        }
+        defer { Darwin.close(fd) }
+        if ioctl(fd, UInt(ioRequest), &ifr) < 0 {
             throw POSIXError (POSIXErrorCode (rawValue: errno) ?? POSIXErrorCode.EINVAL)
         }
         

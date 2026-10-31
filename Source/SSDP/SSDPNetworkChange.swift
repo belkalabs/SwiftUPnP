@@ -20,13 +20,14 @@ struct SSDPLocalNetworkSignature: Equatable {
     static func make(interfaces: [(name: String, type: NWInterface.InterfaceType)], address: (String) -> String?) -> SSDPLocalNetworkSignature {
         var entries = [String]()
         for interface in interfaces {
-            let ipv4 = address(interface.name)
             switch interface.type {
             case .wifi, .wiredEthernet:
-                entries.append("\(interface.name)=\(ipv4 ?? "-")")
-            case .other where interface.name.hasPrefix("bridge") && ipv4 != nil:
+                entries.append("\(interface.name)=\(address(interface.name) ?? "-")")
+            case .other where interface.name.hasPrefix("bridge"):
                 // Personal Hotspot: the TV is a client of this phone.
-                entries.append("\(interface.name)=\(ipv4!)")
+                if let ipv4 = address(interface.name) {
+                    entries.append("\(interface.name)=\(ipv4)")
+                }
             default:
                 continue
             }
